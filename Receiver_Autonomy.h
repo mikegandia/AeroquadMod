@@ -1,0 +1,246 @@
+/*
+  AeroQuad v3.0.1 - February 2012
+ www.AeroQuad.com
+ Copyright (c) 2012 Ted Carancho.  All rights reserved.
+ An Open Source Arduino based multicopter.
+ 
+ This program is free software: you can redistribute it and/or modify 
+ it under the terms of the GNU General Public License as published by 
+ the Free Software Foundation, either version 3 of the License, or 
+ (at your option) any later version. 
+ 
+ This program is distributed in the hope that it will be useful, 
+ but WITHOUT ANY WARRANTY; without even the implied warranty of 
+ MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the 
+ GNU General Public License for more details. 
+ 
+ You should have received a copy of the GNU General Public License 
+ along with this program. If not, see <http://www.gnu.org/licenses/>. 
+ */
+
+#ifndef _AEROQUAD_RECEIVER_H_
+#define _AEROQUAD_RECEIVER_H_
+
+#include "Arduino.h"
+
+#define PWM2RAD 0.002 //  Based upon 5RAD for full stick movement, you take this times the RAD to get the PWM conversion factor
+
+// Receiver variables
+#define TIMEOUT 25000
+#define MINCOMMAND 1000
+#define MIDCOMMAND 1500
+#define MAXCOMMAND 2000
+#define MINDELTA 200
+#define MINCHECK (MINCOMMAND + 100)
+#define MAXCHECK (MAXCOMMAND - 100)
+#define MINTHROTTLE (MINCOMMAND + 100)
+#define LEVELOFF 100
+#define MAX_NB_CHANNEL 10
+
+
+//----Tuning Inputs-----
+
+//int deCel = 250;
+int FlightPower = 1760;
+int FlightX = 1500;
+int FlightY = 1455;
+
+//----------------------
+
+int lastReceiverChannel = 0;
+float receiverXmitFactor = 0.0;
+int receiverData[MAX_NB_CHANNEL] = {
+  0,0,0,0,0,0,0,0,0,0};
+int receiverZero[3] = {
+  0,0,0};
+int receiverCommand[MAX_NB_CHANNEL] = {
+  0,0,0,0,0,0,0,0,0,0};
+int receiverCommandSmooth[MAX_NB_CHANNEL] = {
+  0,0,0,0,0,0,0,0,0,0,};
+float receiverSlope[MAX_NB_CHANNEL] = {
+  0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0};
+float receiverOffset[MAX_NB_CHANNEL] = {
+  0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0};
+float receiverSmoothFactor[MAX_NB_CHANNEL] = {
+  0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0};
+int channelCal;
+unsigned long stop_commands[3] = {
+  1500,0,0};
+boolean BUMP = false;
+
+
+
+void initializeReceiverParam(int nbChannel = 6) {
+
+  lastReceiverChannel = nbChannel;
+
+  receiverCommand[XAXIS] = 1500;
+  receiverCommand[YAXIS] = 1500;
+  receiverCommand[ZAXIS] = 1500;
+  receiverCommand[THROTTLE] = 1000;
+  receiverCommand[MODE] = 1000;
+  receiverCommand[AUX1] = 1000;
+  receiverCommand[AUX2] = 1000;
+  receiverCommand[AUX3] = 1000;
+  receiverCommand[AUX4] = 1000;
+  receiverCommand[AUX5] = 1000;
+
+  for (byte channel = XAXIS; channel < lastReceiverChannel; channel++) {
+    receiverCommandSmooth[channel] = 1.0;
+  }
+  for (byte channel = XAXIS; channel < THROTTLE; channel++) {
+    receiverZero[channel] = 1500;
+  }
+
+  for (byte channel = XAXIS; channel < lastReceiverChannel; channel++) {
+    receiverSlope[channel] = 1;
+  }	
+  for (byte channel = XAXIS; channel < lastReceiverChannel; channel++) {
+    receiverOffset[channel] = 1;
+  }
+  for (byte channel = XAXIS; channel < lastReceiverChannel; channel++) {
+    receiverSmoothFactor[channel] = 1; 
+  }
+}
+
+
+//void Stop_Procedure(unsigned long stop_commands[], int deCel){
+//
+//  unsigned long stop_timer;
+//  static int pitch_power;
+//
+//  if (stop_commands[2] == 1)
+//  {
+//    if (stop_commands[1] == 0)
+//    {
+//      stop_commands[1] = millis();
+//      pitch_power = stop_commands[0]; 
+//    }   
+//
+//    stop_timer = millis() - stop_commands[1];
+//
+//    if (stop_timer <= deCel)
+//      stop_commands[0] = 3000 - pitch_power;
+//
+//    else
+//    {
+//      stop_commands[0] = 1500;
+//      stop_commands[1] = 0;
+//      stop_commands[2] = 0;
+//    }
+//
+//  }
+//  else 
+//    stop_commands[0] = 1500; 
+//
+//}
+
+
+int getRawChannelValue(byte channel);  
+void readReceiver(int beta, double lengthOutput, double widthOutput, int delta, int Remote_Val[], int Prev_Remote_Val[], int Landing[], int Emergency[], int no_remote_signal[]);
+
+void readReceiver(int beta, double lengthOutput, double widthOutput, int delta, int Remote_Val[], int Prev_Remote_Val[], int Landing[], int Emergency[], int no_remote_signal[])
+{
+
+  for(byte channel = XAXIS; channel < lastReceiverChannel; channel++) {
+
+    // Apply receiver calibration adjustment
+    receiverData[channel] = (receiverSlope[channel] * getRawChannelValue(channel)) + receiverOffset[channel];
+    // Smooth the flight control receiver inputs
+    receiverCommandSmooth[channel] = filterSmooth(receiverData[channel], receiverCommandSmooth[channel], receiverSmoothFactor[channel]);
+  }
+
+  // Reduce receiver commands using receiverXmitFactor and center around 1500
+  for (byte channel = XAXIS; channel < THROTTLE; channel++) {
+    receiverCommand[channel] = ((receiverCommandSmooth[channel] - receiverZero[channel]) * receiverXmitFactor) + receiverZero[channel];
+  }	
+  // No xmitFactor reduction applied for throttle, mode and AUX
+  for (byte channel = THROTTLE; channel < lastReceiverChannel; channel++) {
+    receiverCommand[channel] = receiverCommandSmooth[channel];
+  }
+
+
+  //-----FailSafe ON-----
+
+  if (receiverCommand[MODE] > 1500){
+
+    Remote_Val[0] = receiverCommand[YAXIS]; 
+    Remote_Val[1] = receiverCommand[XAXIS]; 
+    Remote_Val[2] = receiverCommand[ZAXIS]; 
+    Remote_Val[3] = receiverCommand[THROTTLE]; 
+
+
+    if (receiverCommand[AUX2] > 1470 && receiverCommand[AUX2] < 1530)
+         no_remote_signal[0]++;
+
+    else if (Emergency[0] == 1)
+    {
+      no_remote_signal[0] = 0;
+      Landing[0] = 0;
+      beta = 1000;
+    }
+
+
+    if (abs(Remote_Val[0] - FlightY) > 50 || abs(Remote_Val[1] - FlightX) > 75 || abs(Remote_Val[2] - 1501) > 50){
+       BUMP = true;
+       Landing[0] = 0;
+   }
+    else 
+       BUMP = false;
+       
+
+  if (!BUMP && beta > 1750)
+  {
+        receiverCommand[THROTTLE] = FlightPower;
+        receiverCommand[YAXIS] =    FlightY + lengthOutput;
+        receiverCommand[XAXIS] =    FlightX + widthOutput;
+        receiverCommand[AUX1] =     2000;
+  }
+
+//    Serial.print("T: ");
+//    Serial.println(receiverCommand[THROTTLE]);
+//    Serial.print("X: ");
+//    Serial.print(receiverCommand[XAXIS]);
+//    Serial.print(",    Y: ");
+//    Serial.print(receiverCommand[YAXIS]);
+//    Serial.print(",    Z: ");
+//    Serial.println(receiverCommand[ZAXIS]);
+//    Serial.print("receiverCommand[AUX1]: ");
+//    Serial.println(receiverCommand[AUX1]);   
+//    Serial.print("Landing[0]: ");
+//    Serial.println(Landing[0]);
+//    Serial.print("Emergency[0]: ");
+//    Serial.println(Emergency[0]);
+//    Serial.print("BUMP: ");
+//    Serial.println(BUMP);
+//    Serial.print("beta: ");
+//    Serial.println(beta);
+//    Serial.println(" ");
+    
+  }
+}
+
+
+void setChannelValue(byte channel,int value);
+
+// return the smoothed & scaled number of radians/sec in stick movement - zero centered
+const float getReceiverSIData(byte channel) {
+  return ((receiverCommand[channel] - receiverZero[channel]) * (2.5 * PWM2RAD));  // +/- 2.5RPS 50% of full rate
+}
+
+#endif
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
